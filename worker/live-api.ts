@@ -48,10 +48,17 @@ export async function liveApi(req:Request,env:Env):Promise<Response>{
    if(!name||!email.includes("@")||typeof pass!=="string"||pass.length<14||pass.length>256)return err("Name, email and password (14+ characters) required");
    const count=await db.prepare("SELECT COUNT(*) AS total FROM auth_users").first();
    if(count.total>0)return err("Initial setup already completed",403);
-   const consumed=await db.prepare("UPDATE setup_tokens SET used_at=? WHERE token_hash=? AND used_at IS NULL AND expires_at>? RETURNING token_hash").bind(now(),await sha(token),now()).first();
-   if(!consumed)return err("Invalid or expired setup token",403);
-   const salt=random();
-   await db.prepare("INSERT INTO auth_users(id,email,display_name,password_salt,password_hash) VALUES(?,?,?,?,?)").bind(uuid(),email,name,salt,await passwordHash(pass,salt)).run();
+   const tokenHash=await sha(token),issuedAt=now();
+   const available=await db.prepare("SELECT token_hash FROM setup_tokens WHERE token_hash=? AND used_at IS NULL AND expires_at>?").bind(tokenHash,issuedAt).first();
+   if(!available)return err("Invalid or expired setup token",403);
+   // Do all expensive crypto BEFORE consuming the one-time token. D1 batch is atomic.
+   const salt=random(),hash=await passwordHash(pass,salt),userId=uuid();
+   await db.batch([
+    db.prepare("INSERT INTO auth_users(id,email,display_name,password_salt,password_hash) SELECT ?,?,?,?,? WHERE EXISTS (SELECT 1 FROM setup_tokens WHERE token_hash=? AND used_at IS NULL AND expires_at>?) AND NOT EXISTS (SELECT 1 FROM auth_users)").bind(userId,email,name,salt,hash,tokenHash,issuedAt),
+    db.prepare("UPDATE setup_tokens SET used_at=? WHERE token_hash=? AND used_at IS NULL AND EXISTS (SELECT 1 FROM auth_users WHERE id=?)").bind(issuedAt,tokenHash,userId)
+   ]);
+   const created=await db.prepare("SELECT id FROM auth_users WHERE id=?").bind(userId).first();
+   if(!created)return err("Setup token already used",409);
    return output({success:true},201);
   }
   if(op==="register"&&method==="POST"){
@@ -60,11 +67,14 @@ export async function liveApi(req:Request,env:Env):Promise<Response>{
    const h=await sha(token);
    const invite=await db.prepare("SELECT family_id,role FROM family_invites WHERE token_hash=? AND accepted_at IS NULL AND expires_at>?").bind(h,now()).first();
    if(!invite)return err("Invalid or expired invitation",403);
-   const claimed=await db.prepare("UPDATE family_invites SET accepted_at=? WHERE token_hash=? AND accepted_at IS NULL RETURNING family_id").bind(now(),h).first();
-   if(!claimed)return err("Invitation already used",409);
-   const salt=random(),newUser=uuid();
-   await db.prepare("INSERT INTO auth_users(id,email,display_name,password_salt,password_hash) VALUES(?,?,?,?,?)").bind(newUser,email,name,salt,await passwordHash(pass,salt)).run();
-   await db.prepare("INSERT INTO family_users(id,family_id,auth_subject,role) VALUES(?,?,?,?)").bind(uuid(),invite.family_id,newUser,invite.role).run();
+   const salt=random(),newUser=uuid(),hash=await passwordHash(pass,salt);
+   await db.batch([
+    db.prepare("INSERT INTO auth_users(id,email,display_name,password_salt,password_hash) SELECT ?,?,?,?,? WHERE EXISTS (SELECT 1 FROM family_invites WHERE token_hash=? AND accepted_at IS NULL AND expires_at>?)").bind(newUser,email,name,salt,hash,h,now()),
+    db.prepare("INSERT INTO family_users(id,family_id,auth_subject,role) SELECT ?,family_id,?,role FROM family_invites WHERE token_hash=? AND accepted_at IS NULL AND EXISTS (SELECT 1 FROM auth_users WHERE id=?)").bind(uuid(),newUser,h,newUser),
+    db.prepare("UPDATE family_invites SET accepted_at=?,accepted_by=? WHERE token_hash=? AND accepted_at IS NULL AND EXISTS (SELECT 1 FROM auth_users WHERE id=?)").bind(now(),newUser,h,newUser)
+   ]);
+   const created=await db.prepare("SELECT id FROM auth_users WHERE id=?").bind(newUser).first();
+   if(!created)return err("Invitation already used",409);
    return output({success:true},201);
   }
   if(op==="login"&&method==="POST"){
