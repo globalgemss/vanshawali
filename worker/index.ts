@@ -23,6 +23,15 @@ const worker = {
         },
       };
     }
+    // Public health endpoint exposes no family data, object keys, or credentials.
+    if (new URL(request.url).pathname === "/api/system/health") {
+      if (request.method !== "GET") return new Response("Method Not Allowed", { status: 405 });
+      const db = (env as unknown as { VANSHAWALI_DB?: { prepare: (sql: string) => { first: () => Promise<unknown> } } }).VANSHAWALI_DB;
+      if (!db) return Response.json({ service: "vanshawali360", database: "unavailable", storage: "pending-activation" }, { status: 503, headers: { "Cache-Control": "no-store" } });
+      return db.prepare("SELECT 1 AS ready").first()
+        .then(() => Response.json({ service: "vanshawali360", database: "connected", storage: "pending-activation" }, { headers: { "Cache-Control": "no-store" } }))
+        .catch(() => Response.json({ service: "vanshawali360", database: "unavailable", storage: "pending-activation" }, { status: 503, headers: { "Cache-Control": "no-store" } }));
+    }
     return runWithConnectorBinding(binding, () => handler.fetch(request, env, ctx));
   },
 };
