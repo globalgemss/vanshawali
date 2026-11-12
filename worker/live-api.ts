@@ -54,6 +54,19 @@ export async function liveApi(req:Request,env:Env):Promise<Response>{
    await db.prepare("INSERT INTO auth_users(id,email,display_name,password_salt,password_hash) VALUES(?,?,?,?,?)").bind(uuid(),email,name,salt,await passwordHash(pass,salt)).run();
    return output({success:true},201);
   }
+  if(op==="register"&&method==="POST"){
+   const b=await read(req),email=text(b?.email,254).toLowerCase(),name=text(b?.name,100),pass=b?.password,token=text(b?.token,200);
+   if(!name||!email.includes("@")||typeof pass!=="string"||pass.length<14||pass.length>256)return err("Name, email, invite token and password (14+ characters) required");
+   const h=await sha(token);
+   const invite=await db.prepare("SELECT family_id,role FROM family_invites WHERE token_hash=? AND accepted_at IS NULL AND expires_at>?").bind(h,now()).first();
+   if(!invite)return err("Invalid or expired invitation",403);
+   const claimed=await db.prepare("UPDATE family_invites SET accepted_at=? WHERE token_hash=? AND accepted_at IS NULL RETURNING family_id").bind(now(),h).first();
+   if(!claimed)return err("Invitation already used",409);
+   const salt=random(),newUser=uuid();
+   await db.prepare("INSERT INTO auth_users(id,email,display_name,password_salt,password_hash) VALUES(?,?,?,?,?)").bind(newUser,email,name,salt,await passwordHash(pass,salt)).run();
+   await db.prepare("INSERT INTO family_users(id,family_id,auth_subject,role) VALUES(?,?,?,?)").bind(uuid(),invite.family_id,newUser,invite.role).run();
+   return output({success:true},201);
+  }
   if(op==="login"&&method==="POST"){
    const b=await read(req),email=text(b?.email,254).toLowerCase(),pass=b?.password;
    if(!email||typeof pass!=="string"||pass.length>256)return err("Invalid login",401);
