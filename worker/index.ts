@@ -23,14 +23,20 @@ const worker = {
         },
       };
     }
-    // Public health endpoint exposes no family data, object keys, or credentials.
+    // Health reports only the presence of bindings; never exposes private records.
     if (new URL(request.url).pathname === "/api/system/health") {
       if (request.method !== "GET") return new Response("Method Not Allowed", { status: 405 });
-      const db = (env as unknown as { VANSHAWALI_DB?: { prepare: (sql: string) => { first: () => Promise<unknown> } } }).VANSHAWALI_DB;
-      if (!db) return Response.json({ service: "vanshawali360", database: "unavailable", storage: "pending-activation" }, { status: 503, headers: { "Cache-Control": "no-store" } });
-      return db.prepare("SELECT 1 AS ready").first()
-        .then(() => Response.json({ service: "vanshawali360", database: "connected", storage: "pending-activation" }, { headers: { "Cache-Control": "no-store" } }))
-        .catch(() => Response.json({ service: "vanshawali360", database: "unavailable", storage: "pending-activation" }, { status: 503, headers: { "Cache-Control": "no-store" } }));
+      const bindings = env as unknown as {
+        VANSHAWALI_DB?: { prepare: (sql: string) => { first: () => Promise<unknown> } };
+        VANSHAWALI_FILES?: { head: (key: string) => Promise<unknown> };
+      };
+      const headers = { "Cache-Control": "no-store" };
+      if (!bindings.VANSHAWALI_DB) {
+        return Response.json({ service: "vanshawali360", database: "unavailable", storage: bindings.VANSHAWALI_FILES ? "bound" : "unavailable" }, { status: 503, headers });
+      }
+      return bindings.VANSHAWALI_DB.prepare("SELECT 1 AS ready").first()
+        .then(() => Response.json({ service: "vanshawali360", database: "connected", storage: bindings.VANSHAWALI_FILES ? "bound" : "unavailable" }, { headers }))
+        .catch(() => Response.json({ service: "vanshawali360", database: "unavailable", storage: bindings.VANSHAWALI_FILES ? "bound" : "unavailable" }, { status: 503, headers }));
     }
     return runWithConnectorBinding(binding, () => handler.fetch(request, env, ctx));
   },
