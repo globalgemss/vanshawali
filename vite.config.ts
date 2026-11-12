@@ -1,12 +1,9 @@
 import vinext from "vinext";
 import { defineConfig } from "vite";
-import hostingConfig from "./.openai/hosting.json";
 import { readExecutionProfile } from "./scripts/execution-profile.mjs";
 import { configureToolEnvironment } from "./scripts/tool-environment.mjs";
 import { sites } from "./scripts/vite/sites-vite-plugin";
 import { connectorPreview } from "./scripts/vite/connector-preview-plugin.mjs";
-
-const { r2 } = hostingConfig;
 
 // macOS Seatbelt blocks FSEvents, so Codex previews need polling for HMR.
 const isCodexSeatbeltSandbox = process.env.CODEX_SANDBOX === "seatbelt";
@@ -23,14 +20,13 @@ const localBindingConfig = {
       database_id: "6d83c4a5-c9cd-4bf6-b67f-7f79a7079072",
     },
   ],
-  r2_buckets: r2
-    ? [
-        {
-          binding: r2,
-          bucket_name: "site-creator-r2",
-        },
-      ]
-    : [],
+  // Private R2 bucket: accessible only to server-side Worker code.
+  r2_buckets: [
+    {
+      binding: "VANSHAWALI_FILES",
+      bucket_name: "vanshawali360-files",
+    },
+  ],
 };
 
 export default defineConfig(async ({ command }) => {
